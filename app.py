@@ -1,8 +1,10 @@
-from flask import Flask, render_template, request, url_for
+from flask import Flask, render_template, request
 from werkzeug.utils import secure_filename
 import os, cv2, numpy as np
 from ultralytics import YOLO
 from collections import Counter
+import webbrowser
+import threading
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "static/uploads"
@@ -14,7 +16,6 @@ model = YOLO("yolov8n.pt")
 
 
 def iou(boxA, boxB):
-    # box = [x1, y1, x2, y2]
     xA = max(boxA[0], boxB[0])
     yA = max(boxA[1], boxB[1])
     xB = min(boxA[2], boxB[2])
@@ -33,19 +34,12 @@ def iou(boxA, boxB):
 
 
 def nms_per_class(detections, iou_thresh=0.5):
-    """
-    Simple NMS per-class:
-    detections: list of {'name', 'conf', 'box'}
-    returns filtered list
-    """
     kept = []
-    # group by class name
     groups = {}
     for d in detections:
         groups.setdefault(d['name'], []).append(d)
 
     for name, items in groups.items():
-        # sort by confidence descending
         items = sorted(items, key=lambda x: x['conf'], reverse=True)
         selected = []
         for it in items:
@@ -58,7 +52,6 @@ def nms_per_class(detections, iou_thresh=0.5):
                 selected.append(it)
         kept.extend(selected)
 
-    # sort by confidence (optional)
     kept = sorted(kept, key=lambda x: x['conf'], reverse=True)
     return kept
 
@@ -76,18 +69,15 @@ def index():
         filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
         file.save(filepath)
 
-        # Run YOLO: tune 'conf' (confidence) and 'iou' to adjust sensitivity
-        # Increase conf to reduce low-confidence duplicates (try 0.45-0.6)
-        results = model(filepath, conf=0.45, iou=0.45)  # returns list-like, take first frame
+        results = model(filepath, conf=0.45, iou=0.45)
         r = results[0]
 
-        # If no detections, handle gracefully
         if len(r.boxes) == 0:
             return render_template("index.html", filename=filename, results={"total": 0, "counts": {}, "detected": []})
 
-        boxes = r.boxes.xyxy.cpu().numpy()         # shape (N,4)
-        confs = r.boxes.conf.cpu().numpy()         # shape (N,)
-        classes = r.boxes.cls.cpu().numpy().astype(int)  # shape (N,)
+        boxes = r.boxes.xyxy.cpu().numpy()
+        confs = r.boxes.conf.cpu().numpy()
+        classes = r.boxes.cls.cpu().numpy().astype(int)
         names_map = r.names
 
         detections = []
@@ -95,14 +85,12 @@ def index():
             name = names_map[int(cls)]
             detections.append({"name": name, "conf": float(conf), "box": [float(box[0]), float(box[1]), float(box[2]), float(box[3])]})
 
-        # Apply extra NMS per class to remove duplicate overlapping boxes (adjust iou_thresh as needed)
         filtered = nms_per_class(detections, iou_thresh=0.5)
 
         detected_names = [d["name"] for d in filtered]
         counts = dict(Counter(detected_names))
         total = len(detected_names)
 
-        # Draw boxes on image and save annotated image
         img = cv2.imread(filepath)
         for d in filtered:
             x1, y1, x2, y2 = map(int, d["box"])
@@ -118,3 +106,12 @@ def index():
         return render_template("index.html", filename=annotated_name, results=results_out)
 
     return render_template("index.html")
+
+
+def open_browser():
+    webbrowser.open("http://127.0.0.1:5000")
+
+
+if __name__ == "__main__":
+    threading.Timer(1.0, open_browser).start()  # open browser after 1 second
+    app.run(debug=True)
